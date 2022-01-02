@@ -1,0 +1,234 @@
+(*this part consists of the type checker*)
+
+type ty =Bool|Int|Arrow of ty*ty 
+type con = Bcon of bool | Icon of int 
+type op =Add|Sub|Mul|Leq
+type var = string
+type exp = Var of var | Con of con | Oapp of op * exp * exp
+         | Fapp of exp * exp
+         | If of exp * exp *exp
+         | Lam of var * exp
+         | Lamty of var * ty * exp
+         | Let of var * exp * exp
+         | Letrec of var * var * exp * exp
+         | Letrecty of var * var * ty * ty * exp * exp
+type list=[]
+                       
+                       
+let check_op o t1 t2 : ty = match o, t1, t2 with
+  | Add, Int, Int -> Int
+  | Sub, Int, Int -> Int
+  | Mul, Int, Int -> Int
+  | Leq, Int, Int -> Bool
+  |x,y,z-> if y = Int && z= Int 
+      then failwith "wrong operator used (*_*)" 
+      else  failwith "t1 or t2 or both were invalid [@_@]"
+             
+let check_fun t1 t2: ty= match t1 with
+  |Arrow (t11, t12)-> if t11 = t2 then t12 else
+        failwith "fun application: wrong argument type :c"
+  |_-> failwith "fun application: function expected :(" 
+  
+type ('a, 'b) env= ('a*'b) list
+let empty: ('a, 'b) env=[]
+let update (env : ('a,'b) env) a b : ('a,'b) env = (a,b) :: env
+let rec lookup (env : ('a,'b) env) a =  match env with
+  | (a',b) :: env -> if a = a' then Some b else lookup env a
+  | [] -> None
+    
+    
+let rec check env e : ty = match e with
+  |Var x->  (( match lookup env x with
+      | Some t -> t
+      | None -> failwith ("variable " ^ x ^ " is not bounded")
+    )) 
+  |Con (Bcon b)-> Bool
+  |Con (Icon n)-> Int
+  | Oapp (o,e1,e2) -> check_op o (check env e1) (check env e2)
+  |Fapp (e1, e2)-> check_fun (check env e1) (check env e2)
+  |If (e1, e2,e3)-> if (check env e1) <> Bool 
+      then failwith "first expression is not boolean *o*"
+      else
+        (if (check env e3)<> (check env e2) 
+         then failwith "the types of e2 and e3 do not match :o"
+         else
+           check env e2)
+  |Lamty (x,t,e) -> Arrow (t, check (update env x t) e)
+  |Let (x, e1, e2)->check (update env x (check env e1)) e2
+  |Letrecty (f,x,t1,t2,e1,e2) ->
+      let env1 = update env f (Arrow(t1,t2)) in
+      if check (update env1 x t1) e1 = t2 then check env1 e2
+      else failwith "let rec: declared type not matched"
+  |_-> failwith "Something is wrong with your syntax :("
+
+
+
+            (*We now have an evaluator*)
+
+
+type value= Bval of bool | Ival of int
+          | Closure of var * exp * (var, value) env
+          | Rclosure of var * var * exp * (var, value) env
+                          
+let eval_op o v1 v2 = match o, v1, v2 with
+  | Add, Ival n1, Ival n2 -> Ival (n1 + n2)
+  | Sub, Ival n1, Ival n2 -> Ival (n1 - n2)
+  | Mul, Ival n1, Ival n2 -> Ival (n1 * n2)
+  | Leq, Ival n1, Ival n2 -> Bval (n1 <= n2) 
+  | _, _ , _ -> failwith "ill typed ?(^_^)?"
+                  
+
+let rec eval env e : value = match e with
+  | Var x ->
+      ((match lookup env x with
+          | Some v -> v
+          | None -> failwith ("variable " ^ x ^ " is unbound :[")
+        ))
+  | Con (Bcon b) -> Bval b
+  | Con (Icon n) -> Ival n
+  | Oapp (o,e1,e2) -> eval_op o (eval env e1) (eval env e2)          
+  | Fapp (e1,e2) -> eval_fun (eval env e1) (eval env e2)
+  | If (e1,e2,e3) ->
+      ((match eval env e1 with
+          | Bval b -> eval env (if b then e2 else e3)
+          | _ -> failwith "e1 is not a boolean *§*"
+        ))
+  | Lam (x,e) -> Closure (x,e,env)
+  | Let (x,e1,e2) -> eval (update env x (eval env e1)) e2
+  | Letrec (f,x,e1,e2) -> eval (update env f (Rclosure (f,x,e1,env))) e2
+  |_-> failwith "Something seems to be wrong with your syntax %_%"
+and eval_fun v1 v2 = match v1 with
+  | Closure (x,e,env) -> eval (update env x v2) e
+  | Rclosure (f,x,e,env) -> eval (update (update env f v1) x v2) e
+  | _ -> failwith "fun app: function expected"
+           
+           
+
+           (*We now go on with a lexer *)
+type const = BCON of bool | ICON of int
+type token = LP | RP | EQ | COL | ARR | ADD | SUB | MUL | LEQ
+           | IF | THEN | ELSE | LAM | LET | IN | REC
+           | CON of const | VAR of string | BOOL | INT
+           
+let ascval = Char.code
+let num c = ascval c - 48
+let digit c = 48 <= ascval c && ascval c <= 57
+let lc_letter c = 97 <= ascval c && ascval c <= 122
+let uc_letter c = 65 <= ascval c && ascval c <= 90
+let whitespace c = match c with
+  | ' ' | '\n' |  '\t' -> true
+  | _ -> false
+           
+           
+let lex s : token list =
+  let get i = String.get s i in
+  let getstr i n = String.sub s (i-n) n in
+  let exhausted i = i >= String.length s in 
+  let rec lex i l =
+    if exhausted i then List.rev l else match get i with
+      | '+' -> lex (i+1) (ADD::l) 
+      | '*' -> lex (i+1) (MUL::l)
+      | '=' -> lex (i+1) (EQ::l)
+      | '(' -> lex (i+1) (LP::l)
+      | ')' -> lex (i+1) (RP::l)
+      | '<' -> if get (i+1)= '='
+          then lex (i+2) (LEQ::l)
+          else failwith "wrong operator used :("
+      | '-' -> if get (i+1)= '>'
+          then lex (i+2) (ARR::l)
+          else lex (i+1) (SUB::l)
+      | c -> if  whitespace c then lex (i+1) l
+          else
+            (if digit c then lex_num (i+1) (num c) l 
+             else
+               (if  lc_letter c then lex_id (i+1) 1 l
+                else 
+                  failwith "the character that you have used is not valid [*o*]"))
+  and lex_num i n l =
+    if exhausted i then lex_num' i n l
+    else let c = get i in
+      if digit c then lex_num (i+1) (10*n + num c) l
+      else lex_num' i n l
+  and lex_num' i n l = lex i (CON (ICON n)::l)
+  and lex_id i n l =
+    if exhausted i then lex_id' i n l
+    else match get i with
+      | '\'' | '_' -> lex_id (i+1) (n+1) l
+      | c -> if lc_letter c || uc_letter c || digit c
+          then lex_id (i+1) (n+1) l
+          else lex_id' i n l
+  and lex_id' i n l = match getstr i n with
+    | "if" -> lex i (IF::l)
+    | "then" -> lex i (THEN::l)
+    | "else" -> lex i (ELSE::l)
+    | "fun" -> lex i (LAM::l)
+    | "let" -> lex i (LET::l)
+    | "in" -> lex i (IN::l)
+    | "rec" -> lex i (REC::l)
+    | "false" -> lex i (CON (BCON false)::l)
+    | "true" -> lex i (CON (BCON true)::l)
+    | s -> lex i (VAR s::l)
+  in lex 0 []
+    
+    
+    (*We are headed to a parser*)
+
+let verify t l =  match l with
+  | [] -> failwith "You are missing a right parenthesis"
+  | t'::l -> if t'=t then l else failwith "You have something else instead of the right parenthesis"
+          
+          
+let rec exp l : exp * token list = match l with
+  | IF::l -> 
+      let (e1,l) = exp l in
+      let (e2, l)=match l with
+        |THEN::l-> exp l
+        |_-> failwith "Error, 'THEN' expected ;_;"
+      in 
+      let (e3, l)=match l with
+        |ELSE::l-> exp l
+        |_-> failwith "Error, 'ELSE' expected ;_;"
+      in 
+      (If(e1,e2,e3), l)
+  | LAM::VAR x::ARR::l ->
+      let (e,l) = exp l in (Lam (x,e), l) 
+  | LET::VAR x::EQ::l ->
+      let (e1,l) = exp l in
+      let (e2,l) = match l with
+        |IN::l-> exp l
+        |_-> failwith "Error, 'IN' expected ;_;" in
+      (Let (x,e1,e2), l)
+  | LET::REC::VAR f::VAR x::EQ::l ->
+      let (e1,l) = exp l in
+      let (e2,l) = match l with
+        |IN::l-> exp l
+        |_-> failwith "Error, 'IN' expected ;_;" in
+      (Letrec (f,x,e1,e2), l)
+  | l -> cexp l
+and cexp l = let (e,l) = sexp l in cexp' e l
+and cexp' e1 l = match l with
+  | LEQ::l -> let (e2,l) = sexp l in (Oapp(Leq,e1,e2), l)
+  | l -> (e1,l)
+and sexp l = let (e,l) = mexp l in sexp' e l
+and sexp' e1 l = match l with
+  | ADD::l -> let (e2,l) = mexp l in sexp' (Oapp(Add,e1,e2)) l
+  | SUB::l -> let (e2,l) = mexp l in sexp' (Oapp(Sub,e1,e2)) l
+  | l -> (e1,l)
+and mexp l = let (e,l) = aexp l in mexp' e l
+and mexp' e1 l = match l with
+  | MUL::l -> let (e2,l) = aexp l in mexp' (Oapp(Mul,e1,e2)) l
+  | l -> (e1,l)
+and aexp l = let (e,l) = pexp l in aexp' e l
+and aexp' e1 l = match l with
+  | CON _ :: _ | VAR _ :: _ | LP :: _  ->
+      let (e2,l) = pexp l in aexp' (Fapp(e1,e2)) l
+  | l -> (e1,l)
+and pexp l = match l with
+  | CON (BCON b)::l -> (Con (Bcon b), l)
+  | CON (ICON n)::l -> (Con (Icon n), l)
+  | VAR x::l -> (Var x, l)
+  | LP::l -> let (e,l) = exp l in (e, verify RP l)
+  |  _ -> failwith "Something is wrong with your code (+_+)"
+
+              
+                 
